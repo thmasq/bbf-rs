@@ -5,6 +5,7 @@ A Rust port of the **[Bound Book Format (BBF)](https://github.com/ef1500/libbbf)
 ## WebAssembly Usage
 
 To use the BBF reader in your web projects:
+
 1. Download `bbf-wasm-web.tar.gz` from the latest Release.
 2. Extract the `pkg/` directory into your project.
 

@@ -191,7 +191,7 @@ jobs:
         shell: bash
         run: |
           cp target/${{ matrix.lib_target }}/release/${{ matrix.lib_name }} release-assets/${{ matrix.asset_lib }}
-          
+
           # Handle Windows Import Lib
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             cp target/${{ matrix.lib_target }}/release/${{ matrix.import_lib }} release-assets/${{ matrix.asset_import_lib }}
