@@ -1,12 +1,15 @@
 [package]
 name = "bbfmux"
-version = "0.1.1"
-edition = "2024"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-anyhow = "1.0.100"
-clap = { version = "4.5.54", features = ["derive"] }
-bbf = { path = "../bbf" }
-memmap2 = "0.9.9"
-rayon = "1.11.0"
-xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
+anyhow.workspace = true
+bbf.workspace = true
+clap.workspace = true
+memmap2.workspace = true
+rayon.workspace = true
+xxhash-rust.workspace = true

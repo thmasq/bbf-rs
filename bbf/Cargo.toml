@@ -1,13 +1,16 @@
 [package]
 name = "bbf"
-version = "0.1.1"
-edition = "2024"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [lib]
 name = "bbf"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-thiserror = "2.0.18"
-xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
-zerocopy = { version = "0.8.33", features = ["derive"] }
+thiserror.workspace = true
+xxhash-rust.workspace = true
+zerocopy.workspace = true
