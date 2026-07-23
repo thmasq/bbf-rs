@@ -102,7 +102,7 @@ impl<W: Write + Seek> BBFBuilder<W> {
         }
 
         self.pages.push(BBFPageEntry {
-            asset_index: (asset_index as u64).into(),
+            asset_index: u64::from(asset_index).into(),
             flags: flags.into(),
             reserved: [0; 4],
         });
@@ -125,10 +125,9 @@ impl<W: Write + Seek> BBFBuilder<W> {
     pub fn add_section(&mut self, title: &str, start_page: u32, parent_idx: Option<u32>) {
         let section = BBFSection {
             section_title_offset: self.get_or_add_str(title).into(),
-            section_start_index: (start_page as u64).into(),
+            section_start_index: u64::from(start_page).into(),
             section_parent_offset: parent_idx
-                .map(|v| v as u64)
-                .unwrap_or(0xFFFF_FFFF_FFFF_FFFF)
+                .map_or(0xFFFF_FFFF_FFFF_FFFF, |v| u64::from(v))
                 .into(),
             reserved: [0; 8],
         };

@@ -180,16 +180,13 @@ pub extern "C" fn bbf_reader_get_page(
         let page = &pages[page_index as usize];
         let asset_index = page.asset_index.get();
 
-        match reader_ref.get_asset(asset_index) {
-            Ok(data_slice) => {
-                unsafe {
-                    *out_ptr = data_slice.as_ptr();
-                    *out_len = data_slice.len();
-                }
-                0
+        reader_ref.get_asset(asset_index).map_or(-1, |data_slice| {
+            unsafe {
+                *out_ptr = data_slice.as_ptr();
+                *out_len = data_slice.len();
             }
-            Err(_) => -1,
-        }
+            0
+        })
     });
     result.unwrap_or(-1)
 }
