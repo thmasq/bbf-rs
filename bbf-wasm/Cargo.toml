@@ -1,0 +1,15 @@
+[package]
+name = "bbf-wasm"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bbf = { path = "../bbf" }
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true } 

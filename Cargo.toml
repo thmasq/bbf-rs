@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "bbf",
+  "bbf-wasm",
   "bbfmux",
   "example-webapp",
 ]
@@ -19,6 +20,7 @@ anyhow = "1.0.100"
 bbf = { path = "bbf" }
 clap = { version = "4.5.54", features = ["derive"] }
 console_error_panic_hook = "0.1.7"
+js-sys = "0.3.103"
 leptos = { version = "0.8.15", features = ["csr"] }
 leptos_meta = "0.8.5"
 leptos_router = "0.8.11"

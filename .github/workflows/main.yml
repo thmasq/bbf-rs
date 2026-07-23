@@ -33,6 +33,35 @@ jobs:
           name: bbf-header
           path: bbf.h
 
+  build-wasm:
+    name: Build WASM Module
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM Library
+        run: wasm-pack build bbf-wasm --target web --release
+
+      - name: Archive WASM Package
+        run: tar -czvf bbf-wasm-web.tar.gz -C bbf-wasm pkg/
+
+      - name: Upload WASM Release Asset
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: bbf-wasm-web.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   deploy-webapp:
     name: Deploy to GitHub Pages
     runs-on: ubuntu-latest
@@ -71,17 +100,6 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
-      - name: Archive WASM Package
-        run: tar -czvf bbf-wasm-web.tar.gz -C example-webapp pkg/
-
-      - name: Upload WASM to Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: bbf-wasm-web.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-artifacts:
     name: Build (${{ matrix.os_name }})
