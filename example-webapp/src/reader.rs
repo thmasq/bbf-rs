@@ -9,7 +9,6 @@ use leptos_styling::inline_style_sheet;
 use std::sync::Arc;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlInputElement, MouseEvent, Url, js_sys};
-use xxhash_rust::xxh3::xxh3_64;
 
 #[derive(Clone)]
 struct LoadedBook {
@@ -277,8 +276,13 @@ pub fn Reader() -> impl IntoView {
                                 let assets = r.assets();
                                 let mut bad = 0;
                                 for (i, asset) in assets.iter().enumerate() {
-                                    if let Ok(data) = r.get_asset(i as u32) {
-                                        if xxh3_64(data) != asset.xxh3_hash.get() {
+                                    if let Ok(data) = r.get_asset(i as u64) {
+                                        let hash = xxhash_rust::xxh3::xxh3_128(data);
+                                        let hash_lo = (hash & 0xFFFF_FFFF_FFFF_FFFF) as u64;
+                                        let hash_hi = (hash >> 64) as u64;
+                                        if hash_lo != asset.asset_hash[0].get()
+                                            || hash_hi != asset.asset_hash[1].get()
+                                        {
                                             bad += 1;
                                         }
                                     } else {
@@ -395,7 +399,7 @@ pub fn Reader() -> impl IntoView {
 
                                     reader.sections().iter().map(move |s| {
                                         let title = reader_for_closure.get_string(s.section_title_offset.get()).unwrap_or("?").to_string();
-                                        let page = s.section_start_index.get();
+                                        let page = s.section_start_index.get() as u32;
                                         let is_active = page_idx.get() >= page;
 
                                         view! {
@@ -426,7 +430,7 @@ pub fn Reader() -> impl IntoView {
 
                                     reader.metadata().iter().map(move |m| {
                                         let k = reader_for_closure.get_string(m.key_offset.get()).unwrap_or("?").to_string();
-                                        let v = reader_for_closure.get_string(m.val_offset.get()).unwrap_or("?").to_string();
+                                        let v = reader_for_closure.get_string(m.value_offset.get()).unwrap_or("?").to_string();
                                         view! {
                                             <li class=reader_css::META_ITEM>
                                                 <span class=reader_css::META_KEY>{k}</span>
