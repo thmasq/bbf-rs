@@ -72,6 +72,17 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
+      - name: Archive WASM Package
+        run: tar -czvf bbf-wasm-web.tar.gz -C example-webapp pkg/
+
+      - name: Upload WASM to Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: bbf-wasm-web.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build-artifacts:
     name: Build (${{ matrix.os_name }})
     needs: [generate-header]
