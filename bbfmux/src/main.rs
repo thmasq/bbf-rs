@@ -284,7 +284,7 @@ fn cmd_info(path: &Path) -> Result<()> {
     } else {
         for m in metadata {
             let k = reader.get_string(m.key_offset.get()).unwrap_or("?");
-            let v = reader.get_string(m.val_offset.get()).unwrap_or("?");
+            let v = reader.get_string(m.value_offset.get()).unwrap_or("?");
             println!(" - {k:<15}:{v}");
         }
     }
@@ -311,7 +311,7 @@ fn cmd_verify(path: &Path, user_index: Option<i32>) -> Result<()> {
     }
 
     let calc_index_hash = xxh3_64(&data[meta_start..meta_start + meta_size]);
-    let dir_ok = calc_index_hash == reader.footer.index_hash.get();
+    let dir_ok = calc_index_hash == reader.footer.footer_hash.get();
 
     if target_index == -1 {
         println!("Directory Hash: {}", if dir_ok { "OK" } else { "CORRUPT" });
@@ -326,7 +326,7 @@ fn cmd_verify(path: &Path, user_index: Option<i32>) -> Result<()> {
     if !dir_ok {
         eprintln!(
             " [!!] Directory Hash CORRUPT (Wanted: {}, Got: {})",
-            reader.footer.index_hash.get(),
+            reader.footer.footer_hash.get(),
             calc_index_hash
         );
     }
@@ -334,8 +334,8 @@ fn cmd_verify(path: &Path, user_index: Option<i32>) -> Result<()> {
     let assets = reader.assets();
     let check_asset = |idx: usize| -> bool {
         let asset = &assets[idx];
-        let start = asset.offset.get() as usize;
-        let len = asset.length.get() as usize;
+        let start = asset.file_offset.get() as usize;
+        let len = asset.file_size.get() as usize;
 
         if start + len > data.len() {
             eprintln!(" [!!] Asset {idx} CORRUPT (Out of bounds)");
@@ -343,8 +343,10 @@ fn cmd_verify(path: &Path, user_index: Option<i32>) -> Result<()> {
         }
 
         let slice = &data[start..start + len];
-        let hash = xxh3_64(slice);
-        if hash != asset.xxh3_hash.get() {
+        let hash = xxhash_rust::xxh3::xxh3_128(slice);
+        let hash_lo = (hash & 0xFFFF_FFFF_FFFF_FFFF) as u64;
+        let hash_hi = (hash >> 64) as u64;
+        if hash_lo != asset.asset_hash[0].get() || hash_hi != asset.asset_hash[1].get() {
             eprintln!(" [!!] Asset {idx} CORRUPT");
             return false;
         }
@@ -385,8 +387,9 @@ fn cmd_extract(
     let pages = reader.pages();
     let sections = reader.sections();
 
-    let mut start_idx = 0;
-    let mut end_idx = pages.len() as u32;
+    let mut start_idx: u64 = 0;
+    let mut end_idx: u64 = pages.len() as u64;
+
     let mut section_name_found = "Full Book";
 
     if let Some(filter) = section_filter {
@@ -399,7 +402,7 @@ fn cmd_extract(
                 start_idx = s.section_start_index.get();
                 section_name_found = title;
 
-                end_idx = pages.len() as u32;
+                end_idx = pages.len() as u64;
 
                 for next_s in sections.iter().skip(i + 1) {
                     let next_title = reader
@@ -451,8 +454,8 @@ fn cmd_extract(
         let out_name = format!("p{}{}", i + 1, ext);
         let out_path = outdir.join(out_name);
 
-        let file_offset = asset.offset.get() as usize;
-        let file_len = asset.length.get() as usize;
+        let file_offset = asset.file_offset.get() as usize;
+        let file_len = asset.file_size.get() as usize;
 
         if file_offset + file_len > data.len() {
             eprintln!("Warning: Page {i} out of bounds, skipping.");

@@ -40,22 +40,23 @@ impl<T: AsRef<[u8]>> BBFReader<T> {
         let header =
             BBFHeader::read_from_bytes(header_slice).map_err(|_| BBFError::FileTooShort)?;
 
-        if &header.magic != b"BBF1" {
+        if &header.magic != b"BBF3" {
             return Err(BBFError::InvalidMagic);
         }
 
-        let footer_offset = (total_len as usize) - size_of::<BBFFooter>();
-        let footer_slice = &slice[footer_offset..];
+        let footer_offset = header.footer_offset.get() as usize;
+
+        if footer_offset + size_of::<BBFFooter>() > slice.len() {
+            return Err(BBFError::FileTooShort);
+        }
+
+        let footer_slice = &slice[footer_offset..footer_offset + size_of::<BBFFooter>()];
         let footer =
             BBFFooter::read_from_bytes(footer_slice).map_err(|_| BBFError::FileTooShort)?;
 
-        if &footer.magic != b"BBF1" {
-            return Err(BBFError::InvalidMagic);
-        }
-
-        let check_range = |offset: u64, count: u32, elem_size: usize| -> Result<(), BBFError> {
+        let check_range = |offset: u64, count: u64, elem_size: usize| -> Result<(), BBFError> {
             let start = offset;
-            let size = u64::from(count)
+            let size = count
                 .checked_mul(elem_size as u64)
                 .ok_or(BBFError::TableError)?;
             let end = start.checked_add(size).ok_or(BBFError::TableError)?;
@@ -66,32 +67,36 @@ impl<T: AsRef<[u8]>> BBFReader<T> {
             Ok(())
         };
 
-        if footer.string_pool_offset.get() > footer.asset_table_offset.get()
-            || footer.asset_table_offset.get() > total_len
-        {
-            return Err(BBFError::TableError);
-        }
-
         check_range(
-            footer.asset_table_offset.get(),
+            footer.asset_offset.get(),
             footer.asset_count.get(),
             size_of::<BBFAssetEntry>(),
         )?;
         check_range(
-            footer.page_table_offset.get(),
+            footer.page_offset.get(),
             footer.page_count.get(),
             size_of::<BBFPageEntry>(),
         )?;
         check_range(
-            footer.section_table_offset.get(),
+            footer.section_offset.get(),
             footer.section_count.get(),
             size_of::<BBFSection>(),
         )?;
         check_range(
-            footer.meta_table_offset.get(),
-            footer.key_count.get(),
+            footer.meta_offset.get(),
+            footer.meta_count.get(),
             size_of::<BBFMetadata>(),
         )?;
+
+        let pool_start = footer.string_pool_offset.get();
+        let pool_size = footer.string_pool_size.get();
+        if pool_start
+            .checked_add(pool_size)
+            .ok_or(BBFError::TableError)?
+            > total_len
+        {
+            return Err(BBFError::FileTooShort);
+        }
 
         Ok(Self {
             data,
@@ -100,7 +105,7 @@ impl<T: AsRef<[u8]>> BBFReader<T> {
         })
     }
 
-    fn get_table_slice<U: FromBytes + zerocopy::Immutable>(&self, offset: u64, count: u32) -> &[U] {
+    fn get_table_slice<U: FromBytes + zerocopy::Immutable>(&self, offset: u64, count: u64) -> &[U] {
         let start = offset as usize;
         let elem_size = size_of::<U>();
         let len = (count as usize) * elem_size;
@@ -112,44 +117,37 @@ impl<T: AsRef<[u8]>> BBFReader<T> {
 
     pub fn assets(&self) -> &[BBFAssetEntry] {
         self.get_table_slice(
-            self.footer.asset_table_offset.get(),
+            self.footer.asset_offset.get(),
             self.footer.asset_count.get(),
         )
     }
 
     pub fn pages(&self) -> &[BBFPageEntry] {
-        self.get_table_slice(
-            self.footer.page_table_offset.get(),
-            self.footer.page_count.get(),
-        )
+        self.get_table_slice(self.footer.page_offset.get(), self.footer.page_count.get())
     }
 
     pub fn sections(&self) -> &[BBFSection] {
         self.get_table_slice(
-            self.footer.section_table_offset.get(),
+            self.footer.section_offset.get(),
             self.footer.section_count.get(),
         )
     }
 
     pub fn metadata(&self) -> &[BBFMetadata] {
-        self.get_table_slice(
-            self.footer.meta_table_offset.get(),
-            self.footer.key_count.get(),
-        )
+        self.get_table_slice(self.footer.meta_offset.get(), self.footer.meta_count.get())
     }
 
-    pub fn get_string(&self, offset: u32) -> Option<&str> {
+    pub fn get_string(&self, offset: u64) -> Option<&str> {
         let pool_start = self.footer.string_pool_offset.get() as usize;
-        let pool_end = self.footer.asset_table_offset.get() as usize;
-
-        let pool_slice = &self.data.as_ref()[pool_start..pool_end];
+        let pool_size = self.footer.string_pool_size.get() as usize;
 
         let offset = offset as usize;
-        if offset >= pool_slice.len() {
+
+        if offset < pool_start || offset >= pool_start + pool_size {
             return None;
         }
 
-        let slice_from_offset = &pool_slice[offset..];
+        let slice_from_offset = &self.data.as_ref()[offset..pool_start + pool_size];
         let end = slice_from_offset
             .iter()
             .position(|&c| c == 0)
@@ -158,15 +156,15 @@ impl<T: AsRef<[u8]>> BBFReader<T> {
         std::str::from_utf8(&slice_from_offset[..end]).ok()
     }
 
-    pub fn get_asset(&self, asset_index: u32) -> Result<&[u8], BBFError> {
+    pub fn get_asset(&self, asset_index: u64) -> Result<&[u8], BBFError> {
         let assets = self.assets();
         if asset_index as usize >= assets.len() {
             return Err(BBFError::OutOfBounds);
         }
 
         let asset = &assets[asset_index as usize];
-        let offset = asset.offset.get() as usize;
-        let length = asset.length.get() as usize;
+        let offset = asset.file_offset.get() as usize;
+        let length = asset.file_size.get() as usize;
 
         let total_slice = self.data.as_ref();
 

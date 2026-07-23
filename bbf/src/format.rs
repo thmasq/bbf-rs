@@ -68,76 +68,86 @@ impl BBFMediaType {
 #[repr(C, packed)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned, Debug, Clone, Copy)]
 pub struct BBFHeader {
-    pub magic: [u8; 4], // "BBF1"
-    pub version: u8,    // 2
-    pub flags: U32<LittleEndian>,
+    pub magic: [u8; 4], // "BBF3"
+    pub version: U16<LittleEndian>,
     pub header_len: U16<LittleEndian>,
-    pub reserved: U64<LittleEndian>,
+    pub flags: U32<LittleEndian>,
+    pub alignment: u8,
+    pub ream_size: u8,
+    pub reserved_extra: U16<LittleEndian>,
+    pub footer_offset: U64<LittleEndian>,
+    pub reserved: [u8; 40],
 }
 
 #[repr(C, packed)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned, Debug, Clone, Copy)]
 pub struct BBFAssetEntry {
-    pub offset: U64<LittleEndian>,
-    pub length: U64<LittleEndian>,
-    pub decoded_length: U64<LittleEndian>,
-    pub xxh3_hash: U64<LittleEndian>,
+    pub file_offset: U64<LittleEndian>,
+    pub asset_hash: [U64<LittleEndian>; 2],
+    pub file_size: U64<LittleEndian>,
+    pub flags: U32<LittleEndian>,
+    pub reserved_value: U16<LittleEndian>,
     pub type_: u8,
-    pub flags: u8,
-    pub padding: [u8; 6],
-    pub reserved: [U64<LittleEndian>; 3],
+    pub reserved: [u8; 9],
 }
 
 #[repr(C, packed)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned, Debug, Clone, Copy)]
 pub struct BBFPageEntry {
-    pub asset_index: U32<LittleEndian>,
+    pub asset_index: U64<LittleEndian>,
     pub flags: U32<LittleEndian>,
+    pub reserved: [u8; 4],
 }
 
 #[repr(C, packed)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned, Debug, Clone, Copy)]
 pub struct BBFSection {
-    pub section_title_offset: U32<LittleEndian>,
-    pub section_start_index: U32<LittleEndian>,
-    pub parent_section_index: U32<LittleEndian>,
+    pub section_title_offset: U64<LittleEndian>,
+    pub section_start_index: U64<LittleEndian>,
+    pub section_parent_offset: U64<LittleEndian>,
+    pub reserved: [u8; 8],
 }
 
 #[repr(C, packed)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned, Debug, Clone, Copy)]
 pub struct BBFMetadata {
-    pub key_offset: U32<LittleEndian>,
-    pub val_offset: U32<LittleEndian>,
+    pub key_offset: U64<LittleEndian>,
+    pub value_offset: U64<LittleEndian>,
+    pub parent_offset: U64<LittleEndian>,
+    pub reserved: [u8; 8],
 }
 
 #[repr(C, packed)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned, Debug, Clone, Copy)]
-pub struct BBFExpansionHeader {
-    pub extension_type: U32<LittleEndian>,
-    pub padding: U32<LittleEndian>,
-    pub offset: U64<LittleEndian>,
-    pub flags: U64<LittleEndian>,
-    pub length: U64<LittleEndian>,
+pub struct BBFExpansionEntry {
+    pub exp_reserved: [U64<LittleEndian>; 10],
+    pub flags: U32<LittleEndian>,
+    pub reserved: [u8; 44],
 }
 
 #[repr(C, packed)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned, Debug, Clone, Copy)]
 pub struct BBFFooter {
+    pub asset_offset: U64<LittleEndian>,
+    pub page_offset: U64<LittleEndian>,
+    pub section_offset: U64<LittleEndian>,
+    pub meta_offset: U64<LittleEndian>,
+    pub expansion_offset: U64<LittleEndian>,
+
     pub string_pool_offset: U64<LittleEndian>,
-    pub asset_table_offset: U64<LittleEndian>,
-    pub asset_count: U32<LittleEndian>,
+    pub string_pool_size: U64<LittleEndian>,
 
-    pub page_table_offset: U64<LittleEndian>,
-    pub page_count: U32<LittleEndian>,
+    pub asset_count: U64<LittleEndian>,
+    pub page_count: U64<LittleEndian>,
+    pub section_count: U64<LittleEndian>,
+    pub meta_count: U64<LittleEndian>,
+    pub expansion_count: U64<LittleEndian>,
 
-    pub section_table_offset: U64<LittleEndian>,
-    pub section_count: U32<LittleEndian>,
+    pub flags: U32<LittleEndian>,
+    pub footer_len: U16<LittleEndian>,
+    pub padding: [u8; 2],
 
-    pub meta_table_offset: U64<LittleEndian>,
-    pub key_count: U32<LittleEndian>,
+    pub footer_hash: U64<LittleEndian>,
 
-    pub extra_offset: U64<LittleEndian>,
-
-    pub index_hash: U64<LittleEndian>,
-    pub magic: [u8; 4],
+    pub reserved: [u8; 144],
 }
