@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::mem::size_of;
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 use zerocopy::{FromBytes, FromZeros, IntoBytes};
 
@@ -28,7 +29,7 @@ impl<W: Write + Seek> BBFBuilder<W> {
         let header = BBFHeader {
             magic: *b"BBF3",
             version: 3.into(),
-            header_len: (std::mem::size_of::<BBFHeader>() as u16).into(),
+            header_len: (size_of::<BBFHeader>() as u16).into(),
             flags: 0.into(),
             alignment: 12,
             ream_size: 16,
@@ -38,7 +39,7 @@ impl<W: Write + Seek> BBFBuilder<W> {
         };
 
         writer.write_all(header.as_bytes())?;
-        let current_offset = std::mem::size_of::<BBFHeader>() as u64;
+        let current_offset = size_of::<BBFHeader>() as u64;
 
         Ok(Self {
             writer,
@@ -160,10 +161,10 @@ impl<W: Write + Seek> BBFBuilder<W> {
         let mut footer = BBFFooter::new_zeroed();
 
         let string_pool_offset = current_offset
-            + (assets.len() * std::mem::size_of::<BBFAssetEntry>()) as u64
-            + (pages.len() * std::mem::size_of::<BBFPageEntry>()) as u64
-            + (sections.len() * std::mem::size_of::<BBFSection>()) as u64
-            + (metadata.len() * std::mem::size_of::<BBFMetadata>()) as u64;
+            + (assets.len() * size_of::<BBFAssetEntry>()) as u64
+            + (pages.len() * size_of::<BBFPageEntry>()) as u64
+            + (sections.len() * size_of::<BBFSection>()) as u64
+            + (metadata.len() * size_of::<BBFMetadata>()) as u64;
 
         footer.string_pool_offset = string_pool_offset.into();
         footer.string_pool_size = (string_pool.len() as u64).into();
@@ -248,7 +249,7 @@ impl<W: Write + Seek> BBFBuilder<W> {
 /// Post-processes a standard BBF file into a "petrified" BBF file in-place.
 pub fn petrify<F: Read + Write + Seek>(file: &mut F) -> io::Result<()> {
     file.seek(SeekFrom::Start(0))?;
-    let mut header_buf = [0u8; std::mem::size_of::<BBFHeader>()];
+    let mut header_buf = [0u8; size_of::<BBFHeader>()];
     file.read_exact(&mut header_buf)?;
 
     let mut header = BBFHeader::read_from_bytes(&header_buf)
@@ -257,7 +258,7 @@ pub fn petrify<F: Read + Write + Seek>(file: &mut F) -> io::Result<()> {
     let old_footer_offset = header.footer_offset.get() as u64;
 
     file.seek(SeekFrom::Start(old_footer_offset))?;
-    let mut footer_buf = [0u8; std::mem::size_of::<BBFFooter>()];
+    let mut footer_buf = [0u8; size_of::<BBFFooter>()];
     file.read_exact(&mut footer_buf)?;
 
     let old_footer = BBFFooter::read_from_bytes(&footer_buf)
@@ -269,45 +270,41 @@ pub fn petrify<F: Read + Write + Seek>(file: &mut F) -> io::Result<()> {
     let meta_count = old_footer.meta_count.get() as usize;
     let pool_size = old_footer.string_pool_size.get() as usize;
 
-    let tables_size = (asset_count * std::mem::size_of::<BBFAssetEntry>())
-        + (page_count * std::mem::size_of::<BBFPageEntry>())
-        + (section_count * std::mem::size_of::<BBFSection>())
-        + (meta_count * std::mem::size_of::<BBFMetadata>())
+    let tables_size = (asset_count * size_of::<BBFAssetEntry>())
+        + (page_count * size_of::<BBFPageEntry>())
+        + (section_count * size_of::<BBFSection>())
+        + (meta_count * size_of::<BBFMetadata>())
         + pool_size;
 
-    let shift_amount = (std::mem::size_of::<BBFFooter>() + tables_size) as u64;
+    let shift_amount = (size_of::<BBFFooter>() + tables_size) as u64;
 
     let mut tables_buf = vec![0u8; tables_size];
     file.seek(SeekFrom::Start(old_footer.asset_offset.get()))?;
     file.read_exact(&mut tables_buf)?;
 
-    let (assets_bytes, rest) =
-        tables_buf.split_at_mut(asset_count * std::mem::size_of::<BBFAssetEntry>());
-    let (_pages_bytes, rest) = rest.split_at_mut(page_count * std::mem::size_of::<BBFPageEntry>());
-    let (sections_bytes, rest) =
-        rest.split_at_mut(section_count * std::mem::size_of::<BBFSection>());
-    let (meta_bytes, _string_pool) =
-        rest.split_at_mut(meta_count * std::mem::size_of::<BBFMetadata>());
+    let (assets_bytes, rest) = tables_buf.split_at_mut(asset_count * size_of::<BBFAssetEntry>());
+    let (_pages_bytes, rest) = rest.split_at_mut(page_count * size_of::<BBFPageEntry>());
+    let (sections_bytes, rest) = rest.split_at_mut(section_count * size_of::<BBFSection>());
+    let (meta_bytes, _string_pool) = rest.split_at_mut(meta_count * size_of::<BBFMetadata>());
 
     let assets = <[BBFAssetEntry]>::mut_from_bytes(assets_bytes).unwrap();
     let sections = <[BBFSection]>::mut_from_bytes(sections_bytes).unwrap();
     let metadata = <[BBFMetadata]>::mut_from_bytes(meta_bytes).unwrap();
 
     let mut new_footer = old_footer;
-    let mut current_offset =
-        (std::mem::size_of::<BBFHeader>() + std::mem::size_of::<BBFFooter>()) as u64;
+    let mut current_offset = (size_of::<BBFHeader>() + size_of::<BBFFooter>()) as u64;
 
     new_footer.asset_offset = current_offset.into();
-    current_offset += (asset_count * std::mem::size_of::<BBFAssetEntry>()) as u64;
+    current_offset += (asset_count * size_of::<BBFAssetEntry>()) as u64;
 
     new_footer.page_offset = current_offset.into();
-    current_offset += (page_count * std::mem::size_of::<BBFPageEntry>()) as u64;
+    current_offset += (page_count * size_of::<BBFPageEntry>()) as u64;
 
     new_footer.section_offset = current_offset.into();
-    current_offset += (section_count * std::mem::size_of::<BBFSection>()) as u64;
+    current_offset += (section_count * size_of::<BBFSection>()) as u64;
 
     new_footer.meta_offset = current_offset.into();
-    current_offset += (meta_count * std::mem::size_of::<BBFMetadata>()) as u64;
+    current_offset += (meta_count * size_of::<BBFMetadata>()) as u64;
 
     new_footer.string_pool_offset = current_offset.into();
 
@@ -341,7 +338,7 @@ pub fn petrify<F: Read + Write + Seek>(file: &mut F) -> io::Result<()> {
     hasher.update(&tables_buf);
     new_footer.footer_hash = hasher.digest().into();
 
-    let asset_data_start = std::mem::size_of::<BBFHeader>() as u64;
+    let asset_data_start = size_of::<BBFHeader>() as u64;
     let asset_data_end = old_footer_offset;
 
     let mut shift_buf = vec![0u8; 65536];
@@ -360,7 +357,7 @@ pub fn petrify<F: Read + Write + Seek>(file: &mut F) -> io::Result<()> {
         current_end = current_start;
     }
 
-    header.footer_offset = (std::mem::size_of::<BBFHeader>() as u64).into();
+    header.footer_offset = (size_of::<BBFHeader>() as u64).into();
 
     file.seek(SeekFrom::Start(0))?;
     file.write_all(header.as_bytes())?;
