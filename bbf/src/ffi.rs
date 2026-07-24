@@ -144,7 +144,7 @@ pub extern "C" fn bbf_reader_get_page_count(reader: *mut CBbfReader) -> u32 {
         if reader.is_null() {
             return 0;
         }
-        unsafe { (*reader).0.footer.page_count.get() as u32 }
+        unsafe { u32::try_from((*reader).0.footer.page_count.get()).unwrap_or(u32::MAX) }
     });
 
     result.unwrap_or(0)

@@ -168,15 +168,15 @@ fn cmd_create(
     cli_petrify: bool,
     cli_inputs: &[PathBuf],
 ) -> Result<()> {
-    let mut manifest = Manifest::default();
-
-    if let Some(path) = manifest_path {
+    let manifest = if let Some(path) = manifest_path {
         info!("Reading manifest from {}", path.display());
         let content = fs::read_to_string(path).context("Failed to read manifest file")?;
-        manifest = toml::from_str(&content).context("Failed to parse TOML manifest")?;
-    }
+        toml::from_str(&content).context("Failed to parse TOML manifest")?
+    } else {
+        Manifest::default()
+    };
 
-    let is_petrified = cli_petrify || manifest.options.map(|o| o.petrify).unwrap_or(false);
+    let is_petrified = cli_petrify || manifest.options.is_some_and(|o| o.petrify);
 
     let mut all_inputs = manifest.inputs.unwrap_or_default();
     all_inputs.extend_from_slice(cli_inputs);
@@ -204,7 +204,7 @@ fn cmd_create(
             let mut entries = fs::read_dir(input_path)?
                 .filter_map(Result::ok)
                 .collect::<Vec<_>>();
-            entries.sort_by_key(|e| e.path());
+            entries.sort_by_key(std::fs::DirEntry::path);
 
             for entry in entries {
                 if entry.path().is_file() {
@@ -350,7 +350,7 @@ fn cmd_info(path: &Path, json: bool) -> Result<()> {
 
     if json {
         let serialized = serde_json::to_string_pretty(&info_out)?;
-        println!("{}", serialized);
+        println!("{serialized}");
     } else {
         println!("Bound Book Format (.bbf) Info");
         println!("------------------------------");
@@ -489,10 +489,9 @@ fn cmd_extract(path: &Path, outdir: &Path, section_filter: Option<&str>) -> Resu
                 start_idx = s.section_start_index.get();
                 section_name = title;
 
-                end_idx = sections
-                    .get(i + 1)
-                    .map(|next_s| next_s.section_start_index.get())
-                    .unwrap_or(pages.len() as u64);
+                end_idx = sections.get(i + 1).map_or(pages.len() as u64, |next_s| {
+                    next_s.section_start_index.get()
+                });
 
                 found = true;
                 break;

@@ -127,9 +127,7 @@ impl<W: Write + Seek> BBFBuilder<W> {
         let section = BBFSection {
             section_title_offset: self.get_or_add_str(title).into(),
             section_start_index: u64::from(start_page).into(),
-            section_parent_offset: parent_idx
-                .map_or(0xFFFF_FFFF_FFFF_FFFF, |v| u64::from(v))
-                .into(),
+            section_parent_offset: parent_idx.map_or(0xFFFF_FFFF_FFFF_FFFF, u64::from).into(),
             reserved: [0; 8],
         };
         self.sections.push(section);
@@ -247,6 +245,14 @@ impl<W: Write + Seek> BBFBuilder<W> {
 }
 
 /// Post-processes a standard BBF file into a "petrified" BBF file in-place.
+///
+/// # Panics
+///
+/// This function will panic if the tables buffer sliced from the file cannot be
+/// safely cast into the required `zerocopy` structs (`BBFAssetEntry`, `BBFSection`,
+/// `BBFMetadata`). In practice, this should never happen unless the file's footer
+/// contains highly corrupted table counts that cause the buffer splits to be
+/// incorrectly sized.
 pub fn petrify<F: Read + Write + Seek>(file: &mut F) -> io::Result<()> {
     file.seek(SeekFrom::Start(0))?;
     let mut header_buf = [0u8; size_of::<BBFHeader>()];
@@ -255,7 +261,7 @@ pub fn petrify<F: Read + Write + Seek>(file: &mut F) -> io::Result<()> {
     let mut header = BBFHeader::read_from_bytes(&header_buf)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid header"))?;
 
-    let old_footer_offset = header.footer_offset.get() as u64;
+    let old_footer_offset = header.footer_offset.get();
 
     file.seek(SeekFrom::Start(old_footer_offset))?;
     let mut footer_buf = [0u8; size_of::<BBFFooter>()];
@@ -308,8 +314,8 @@ pub fn petrify<F: Read + Write + Seek>(file: &mut F) -> io::Result<()> {
 
     new_footer.string_pool_offset = current_offset.into();
 
-    let string_offset_diff =
-        new_footer.string_pool_offset.get() as i64 - old_footer.string_pool_offset.get() as i64;
+    let string_offset_diff = new_footer.string_pool_offset.get().cast_signed()
+        - old_footer.string_pool_offset.get().cast_signed();
 
     for asset in assets.iter_mut() {
         let old_offset = asset.file_offset.get();
@@ -317,20 +323,34 @@ pub fn petrify<F: Read + Write + Seek>(file: &mut F) -> io::Result<()> {
     }
 
     for section in sections.iter_mut() {
-        section.section_title_offset =
-            ((section.section_title_offset.get() as i64 + string_offset_diff) as u64).into();
+        section.section_title_offset = section
+            .section_title_offset
+            .get()
+            .wrapping_add_signed(string_offset_diff)
+            .into();
+
         let parent = section.section_parent_offset.get();
         if parent != 0xFFFF_FFFF_FFFF_FFFF {
-            section.section_parent_offset = ((parent as i64 + string_offset_diff) as u64).into();
+            section.section_parent_offset = parent.wrapping_add_signed(string_offset_diff).into();
         }
     }
 
     for meta in metadata.iter_mut() {
-        meta.key_offset = ((meta.key_offset.get() as i64 + string_offset_diff) as u64).into();
-        meta.value_offset = ((meta.value_offset.get() as i64 + string_offset_diff) as u64).into();
+        meta.key_offset = meta
+            .key_offset
+            .get()
+            .wrapping_add_signed(string_offset_diff)
+            .into();
+
+        meta.value_offset = meta
+            .value_offset
+            .get()
+            .wrapping_add_signed(string_offset_diff)
+            .into();
+
         let parent = meta.parent_offset.get();
         if parent != 0xFFFF_FFFF_FFFF_FFFF {
-            meta.parent_offset = ((parent as i64 + string_offset_diff) as u64).into();
+            meta.parent_offset = parent.wrapping_add_signed(string_offset_diff).into();
         }
     }
 
