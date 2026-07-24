@@ -1,7 +1,34 @@
+#![feature(const_cmp, const_trait_impl)]
 use bbf::BBFMediaType;
 use bbf::BBFReader;
 use js_sys::Uint8Array;
 use wasm_bindgen::prelude::*;
+
+const fn extension_to_mime(extension: &str) -> &'static str {
+    match extension {
+        ".png" => "image/png",
+        ".jpg" | ".jpeg" => "image/jpeg",
+        ".avif" => "image/avif",
+        ".webp" => "image/webp",
+        ".jxl" => "image/jxl",
+        _ => "application/octet-stream",
+    }
+}
+
+#[wasm_bindgen]
+pub struct PageInfo {
+    pub offset: f64,
+    pub size: f64,
+    mime_type: String,
+}
+
+#[wasm_bindgen]
+impl PageInfo {
+    #[wasm_bindgen(getter = mimeType)]
+    pub fn mime_type(&self) -> String {
+        self.mime_type.clone()
+    }
+}
 
 #[wasm_bindgen]
 pub struct WasmBBFStreamer {
@@ -31,6 +58,34 @@ impl WasmBBFStreamer {
         let reader =
             BBFReader::new(&self.buffer).map_err(|_| JsValue::from_str("Index not ready yet"))?;
         Ok(reader.pages().len() as u32)
+    }
+
+    /// Returns the absolute offset, size, and MIME type of a page in the BBF file.
+    /// This is ideal for performing HTTP Range requests to fetch pages out of order.
+    pub fn get_page_info(&self, page_index: u32) -> Result<PageInfo, JsValue> {
+        let reader =
+            BBFReader::new(&self.buffer).map_err(|_| JsValue::from_str("Index not ready yet"))?;
+
+        let pages = reader.pages();
+        if page_index as usize >= pages.len() {
+            return Err(JsValue::from_str("Page index out of bounds"));
+        }
+
+        let asset_idx = pages[page_index as usize].asset_index.get();
+        let assets = reader.assets();
+        let asset = &assets[asset_idx as usize];
+
+        let offset = asset.file_offset.get() as f64;
+        let size = asset.file_size.get() as f64;
+
+        let mime = BBFMediaType::from(asset.type_).as_extension();
+        let mime_str = extension_to_mime(mime);
+
+        Ok(PageInfo {
+            offset,
+            size,
+            mime_type: mime_str.to_string(),
+        })
     }
 
     /// Checks if a specific page's bytes have fully arrived
@@ -80,13 +135,7 @@ impl WasmBBFStreamer {
         let asset = &assets[asset_idx as usize];
 
         let mime = BBFMediaType::from(asset.type_).as_extension();
-        let mime_str = match mime {
-            ".png" => "image/png",
-            ".jpg" | ".jpeg" => "image/jpeg",
-            ".avif" => "image/avif",
-            ".webp" => "image/webp",
-            _ => "application/octet-stream",
-        };
+        let mime_str = extension_to_mime(mime);
 
         Ok(mime_str.to_string())
     }

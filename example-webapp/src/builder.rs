@@ -66,6 +66,7 @@ pub fn Builder() -> impl IntoView {
     let (entries, set_entries) = signal(Vec::<BuilderEntry>::new());
     let (metadata, set_metadata) = signal(Vec::<MetaEntry>::new());
     let (status, set_status) = signal(String::new());
+    let (petrify, set_petrify) = signal(false);
 
     let (editing_id, set_editing_id) = signal(Option::<usize>::None);
     let (drag_id, set_drag_id) = signal(Option::<usize>::None);
@@ -510,6 +511,14 @@ pub fn Builder() -> impl IntoView {
                 return;
             }
 
+            if petrify.get_untracked() {
+                set_status.set("Petrifying archive...".to_string());
+                if let Err(err) = bbf::builder::petrify(&mut cursor) {
+                    set_status.set(format!("Error petrifying: {err:?}"));
+                    return;
+                }
+            }
+
             set_status.set("Download starting...".to_string());
             let _ = download_blob(
                 cursor.get_ref(),
@@ -719,12 +728,19 @@ pub fn Builder() -> impl IntoView {
 
             <div class=builder_css::BOTTOM_BAR>
                 <div class=builder_css::STATUS_TEXT>{status}</div>
-                <button
-                    on:click=compile
-                    class=builder_css::COMPILE_BTN
-                >
-                    "Compile & Download .bbf"
-                </button>
+                <div style="display: flex; gap: 1rem; align-items: center;">
+                    <label style="color: #cbd5e1; cursor: pointer; display: flex; align-items: center; gap: 0.5rem;">
+                        <input
+                            type="checkbox"
+                            prop:checked=move || petrify.get()
+                            on:change=move |ev| set_petrify.set(event_target_checked(&ev))
+                        />
+                        <span>"Petrify Archive"</span>
+                    </label>
+                    <button on:click=compile class=builder_css::COMPILE_BTN >
+                        "Compile & Download .bbf"
+                    </button>
+                </div>
             </div>
         </div>
     }

@@ -101,6 +101,71 @@ streamBookAndDecodeFast();
 
 (Note: If a file is not petrified, the streaming example will still work, but is_ready() will seamlessly fall back to waiting for the final chunk before it returns true).
 
+### Ranged Loading (Out-of-Order)
+
+For very large petrified files, downloading the entire archive sequentially can consume too much RAM or bandwidth. Because libbbf stores image assets as raw bytes, Javascript can completely bypass WebAssembly for decoding once the index is parsed.
+
+By fetching just the index and then aborting the main stream, you can use HTTP Range requests to dynamically fetch specific pages out-of-order. This is similar to how video streaming works.
+
+```javascript
+import init, { WasmBBFStreamer } from './pkg/bbf_wasm.js';
+
+async function loadBookWithRanges() {
+    await init();
+    const streamer = new WasmBBFStreamer();
+
+    // Use an AbortController so you can stop the download
+    // immediately after receiving the table of contents.
+    const abortController = new AbortController();
+    const url = "petrified_book.bbf";
+
+    try {
+        const response = await fetch(url, { signal: abortController.signal });
+        const reader = response.body.getReader();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (value) streamer.append_chunk(value);
+
+            // The moment the index is parsed, stop downloading
+            if (streamer.is_ready()) {
+                abortController.abort();
+
+                // Now you can fetch any page you want
+                await fetchSpecificPage(streamer, url, 0); // Load first page
+                await fetchSpecificPage(streamer, url, 50); // Instantly jump to page 51
+                break;
+            }
+            if (done) break;
+        }
+    } catch (err) {
+        if (err.name !== 'AbortError') console.error(err);
+    }
+}
+
+async function fetchSpecificPage(streamer, url, pageIndex) {
+    // 1. Ask Wasm for the absolute file offsets of this page
+    const info = streamer.get_page_info(pageIndex);
+    const rangeEnd = info.offset + info.size - 1;
+
+    // 2. Fetch exactly those bytes from the server
+    const headers = { 'Range': `bytes=${info.offset}-${rangeEnd}` };
+    const response = await fetch(url, { headers });
+
+    // 3. Render the raw bytes directly using the browser
+    const rawBlob = await response.blob();
+    const typedBlob = new Blob([rawBlob], { type: info.mimeType });
+
+    const img = document.createElement("img");
+    img.src = URL.createObjectURL(typedBlob);
+    document.body.appendChild(img);
+}
+
+loadBookWithRanges();
+```
+
+(Note: The web server hosting the .bbf files must support the HTTP Range header for this feature to work).
+
 ## License
 
 Distributed under the MIT License. See `LICENSE` for more information.

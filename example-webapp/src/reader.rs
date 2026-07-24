@@ -15,6 +15,7 @@ struct LoadedBook {
     #[allow(dead_code)]
     name: String,
     reader: Arc<BBFReader<Arc<[u8]>>>,
+    petrified: bool,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -273,6 +274,8 @@ pub fn Reader() -> impl IntoView {
 
                         match BBFReader::new(data_arc) {
                             Ok(r) => {
+                                let is_petrified = r.header.footer_offset.get()
+                                    == std::mem::size_of::<bbf::format::BBFHeader>() as u64;
                                 let assets = r.assets();
                                 let mut bad = 0;
                                 for (i, asset) in assets.iter().enumerate() {
@@ -299,6 +302,7 @@ pub fn Reader() -> impl IntoView {
                                 set_book.set(Some(LoadedBook {
                                     name: fname,
                                     reader: Arc::new(r),
+                                    petrified: is_petrified,
                                 }));
                                 set_page_idx.set(0);
                             }
@@ -423,6 +427,14 @@ pub fn Reader() -> impl IntoView {
                          <div class=format!("{} {}", reader_css::SIDEBAR_HEADER, reader_css::SIDEBAR_HEADER_META)>"Metadata"</div>
 
                          <ul class=reader_css::META_LIST>
+                             <Show when=move || book.get().is_some()>
+                                <li class=reader_css::META_ITEM>
+                                    <span class=reader_css::META_KEY>"Petrified"</span>
+                                    <span class=reader_css::META_VAL>
+                                        {move || if book.get().unwrap().petrified { "Yes" } else { "No" }}
+                                    </span>
+                                </li>
+                             </Show>
                              {move || {
                                 book.get().map(|bk| {
                                     let reader = bk.reader;
