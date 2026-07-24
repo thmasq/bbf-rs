@@ -9,28 +9,28 @@ resolver = "2"
 default-members = ["bbfmux", "bbf"]
 
 [workspace.package]
-version = "0.1.1"
+version = "3.0.1"
 authors = ["Thomas Q <thomasqsa@gmail.com>"]
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/thmasq/libbbf-rs"
 
 [workspace.dependencies]
-anyhow = "1.0.100"
+anyhow = "1.0.104"
 bbf = { path = "bbf" }
-clap = { version = "4.5.54", features = ["derive"] }
+clap = { version = "4.6.4", features = ["derive"] }
 console_error_panic_hook = "0.1.7"
 js-sys = "0.3.103"
-leptos = { version = "0.8.15", features = ["csr"] }
-leptos_meta = "0.8.5"
-leptos_router = "0.8.11"
+leptos = { version = "0.8.20", features = ["csr"] }
+leptos_meta = "0.8.6"
+leptos_router = "0.8.15"
 leptos_styling = { version = "0.3.1", features = ["csr"] }
-memmap2 = "0.9.9"
-rayon = "1.11.0"
-thiserror = "2.0.18"
-uuid = { version = "1.19.0", features = ["js", "v4"] }
-wasm-bindgen = "0.2.108"
-wasm-bindgen-futures = "0.4.58"
-web-sys = { version = "0.3.85", features = ["File", "FileList", "FileReader", "Blob", "BlobPropertyBag", "Url", "HtmlInputElement", "HtmlAnchorElement", "Document", "Window", "DomStringMap", "Element", "DomRect"] }
-xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
-zerocopy = { version = "0.8.33", features = ["derive"] }
+memmap2 = "0.9.11"
+rayon = "1.12.0"
+thiserror = "2.0.19"
+uuid = { version = "1.24.0", features = ["js", "v4"] }
+wasm-bindgen = "0.2.126"
+wasm-bindgen-futures = "0.4.76"
+web-sys = { version = "0.3.103", features = ["File", "FileList", "FileReader", "Blob", "BlobPropertyBag", "Url", "HtmlInputElement", "HtmlAnchorElement", "Document", "Window", "DomStringMap", "Element", "DomRect"] }
+xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
+zerocopy = { version = "0.8.55", features = ["derive"] }
