@@ -13,7 +13,7 @@ version = "3.0.1"
 authors = ["Thomas Q <thomasqsa@gmail.com>"]
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/thmasq/libbbf-rs"
+repository = "https://github.com/thmasq/bbf-rs"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
@@ -39,3 +39,8 @@ wasm-bindgen-futures = "0.4.76"
 web-sys = { version = "0.3.103", features = ["File", "FileList", "FileReader", "Blob", "BlobPropertyBag", "Url", "HtmlInputElement", "HtmlAnchorElement", "Document", "Window", "DomStringMap", "Element", "DomRect"] }
 xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
 zerocopy = { version = "0.8.55", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
