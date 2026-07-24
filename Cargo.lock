@@ -185,7 +185,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bbf"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
  "thiserror 2.0.19",
  "xxhash-rust",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "bbf-wasm"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
  "bbf",
  "js-sys",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "bbfmux"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
  "anyhow",
  "bbf",
@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "example-webapp"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
  "anyhow",
  "bbf",

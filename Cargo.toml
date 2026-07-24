@@ -9,7 +9,7 @@ resolver = "2"
 default-members = ["bbfmux", "bbf"]
 
 [workspace.package]
-version = "3.0.1"
+version = "3.0.2"
 authors = ["Thomas Q <thomasqsa@gmail.com>"]
 edition = "2024"
 license = "MIT"
