@@ -1,9 +1,9 @@
 #![allow(clippy::cast_possible_truncation, clippy::missing_errors_doc)]
 
 use std::collections::HashMap;
-use std::io::{self, Seek, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
-use zerocopy::{FromZeros, IntoBytes};
+use zerocopy::{FromBytes, FromZeros, IntoBytes};
 
 use crate::format::{
     BBFAssetEntry, BBFFooter, BBFHeader, BBFMediaType, BBFMetadata, BBFPageEntry, BBFSection,
@@ -243,4 +243,129 @@ impl<W: Write + Seek> BBFBuilder<W> {
 
         Ok(())
     }
+}
+
+/// Post-processes a standard BBF file into a "petrified" BBF file in-place.
+pub fn petrify<F: Read + Write + Seek>(file: &mut F) -> io::Result<()> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut header_buf = [0u8; std::mem::size_of::<BBFHeader>()];
+    file.read_exact(&mut header_buf)?;
+
+    let mut header = BBFHeader::read_from_bytes(&header_buf)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid header"))?;
+
+    let old_footer_offset = header.footer_offset.get() as u64;
+
+    file.seek(SeekFrom::Start(old_footer_offset))?;
+    let mut footer_buf = [0u8; std::mem::size_of::<BBFFooter>()];
+    file.read_exact(&mut footer_buf)?;
+
+    let old_footer = BBFFooter::read_from_bytes(&footer_buf)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid footer"))?;
+
+    let asset_count = old_footer.asset_count.get() as usize;
+    let page_count = old_footer.page_count.get() as usize;
+    let section_count = old_footer.section_count.get() as usize;
+    let meta_count = old_footer.meta_count.get() as usize;
+    let pool_size = old_footer.string_pool_size.get() as usize;
+
+    let tables_size = (asset_count * std::mem::size_of::<BBFAssetEntry>())
+        + (page_count * std::mem::size_of::<BBFPageEntry>())
+        + (section_count * std::mem::size_of::<BBFSection>())
+        + (meta_count * std::mem::size_of::<BBFMetadata>())
+        + pool_size;
+
+    let shift_amount = (std::mem::size_of::<BBFFooter>() + tables_size) as u64;
+
+    let mut tables_buf = vec![0u8; tables_size];
+    file.seek(SeekFrom::Start(old_footer.asset_offset.get()))?;
+    file.read_exact(&mut tables_buf)?;
+
+    let (assets_bytes, rest) =
+        tables_buf.split_at_mut(asset_count * std::mem::size_of::<BBFAssetEntry>());
+    let (_pages_bytes, rest) = rest.split_at_mut(page_count * std::mem::size_of::<BBFPageEntry>());
+    let (sections_bytes, rest) =
+        rest.split_at_mut(section_count * std::mem::size_of::<BBFSection>());
+    let (meta_bytes, _string_pool) =
+        rest.split_at_mut(meta_count * std::mem::size_of::<BBFMetadata>());
+
+    let assets = <[BBFAssetEntry]>::mut_from_bytes(assets_bytes).unwrap();
+    let sections = <[BBFSection]>::mut_from_bytes(sections_bytes).unwrap();
+    let metadata = <[BBFMetadata]>::mut_from_bytes(meta_bytes).unwrap();
+
+    let mut new_footer = old_footer;
+    let mut current_offset =
+        (std::mem::size_of::<BBFHeader>() + std::mem::size_of::<BBFFooter>()) as u64;
+
+    new_footer.asset_offset = current_offset.into();
+    current_offset += (asset_count * std::mem::size_of::<BBFAssetEntry>()) as u64;
+
+    new_footer.page_offset = current_offset.into();
+    current_offset += (page_count * std::mem::size_of::<BBFPageEntry>()) as u64;
+
+    new_footer.section_offset = current_offset.into();
+    current_offset += (section_count * std::mem::size_of::<BBFSection>()) as u64;
+
+    new_footer.meta_offset = current_offset.into();
+    current_offset += (meta_count * std::mem::size_of::<BBFMetadata>()) as u64;
+
+    new_footer.string_pool_offset = current_offset.into();
+
+    let string_offset_diff =
+        new_footer.string_pool_offset.get() as i64 - old_footer.string_pool_offset.get() as i64;
+
+    for asset in assets.iter_mut() {
+        let old_offset = asset.file_offset.get();
+        asset.file_offset = (old_offset + shift_amount).into();
+    }
+
+    for section in sections.iter_mut() {
+        section.section_title_offset =
+            ((section.section_title_offset.get() as i64 + string_offset_diff) as u64).into();
+        let parent = section.section_parent_offset.get();
+        if parent != 0xFFFF_FFFF_FFFF_FFFF {
+            section.section_parent_offset = ((parent as i64 + string_offset_diff) as u64).into();
+        }
+    }
+
+    for meta in metadata.iter_mut() {
+        meta.key_offset = ((meta.key_offset.get() as i64 + string_offset_diff) as u64).into();
+        meta.value_offset = ((meta.value_offset.get() as i64 + string_offset_diff) as u64).into();
+        let parent = meta.parent_offset.get();
+        if parent != 0xFFFF_FFFF_FFFF_FFFF {
+            meta.parent_offset = ((parent as i64 + string_offset_diff) as u64).into();
+        }
+    }
+
+    let mut hasher = Xxh3::new();
+    hasher.update(&tables_buf);
+    new_footer.footer_hash = hasher.digest().into();
+
+    let asset_data_start = std::mem::size_of::<BBFHeader>() as u64;
+    let asset_data_end = old_footer_offset;
+
+    let mut shift_buf = vec![0u8; 65536];
+    let mut current_end = asset_data_end;
+
+    while current_end > asset_data_start {
+        let chunk_size = std::cmp::min(shift_buf.len() as u64, current_end - asset_data_start);
+        let current_start = current_end - chunk_size;
+
+        file.seek(SeekFrom::Start(current_start))?;
+        file.read_exact(&mut shift_buf[..chunk_size as usize])?;
+
+        file.seek(SeekFrom::Start(current_start + shift_amount))?;
+        file.write_all(&shift_buf[..chunk_size as usize])?;
+
+        current_end = current_start;
+    }
+
+    header.footer_offset = (std::mem::size_of::<BBFHeader>() as u64).into();
+
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(header.as_bytes())?;
+    file.write_all(new_footer.as_bytes())?;
+    file.write_all(&tables_buf)?;
+
+    Ok(())
 }

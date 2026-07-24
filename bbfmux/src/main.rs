@@ -5,304 +5,392 @@ use bbf::{BBFBuilder, BBFMediaType, BBFReader, format::BBFFooter};
 use clap::{Parser, Subcommand};
 use memmap2::Mmap;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
-use std::cmp::Ordering;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
+use tracing::{debug, info, warn};
+use tracing_subscriber::EnvFilter;
 use xxhash_rust::xxh3::xxh3_64;
 
 #[derive(Parser)]
-#[command(version, about, long_about = None)]
+#[command(name = "bbfmux", version, about = "A tool for creating and manipulating Bound Book Format (BBF) files", long_about = None)]
 struct Cli {
-    /// Input files or directories
-    #[arg(value_name = "INPUTS")]
-    inputs: Vec<PathBuf>,
-
-    /// Output filename (default: output.bbf)
-    #[arg(short, long, default_value = "output.bbf")]
-    output: String,
-
     #[command(subcommand)]
-    command: Option<Commands>,
+    command: Commands,
 
-    // --- Muxing Flags ---
-    /// Use a text file to define page order (filename:index)
-    #[arg(long)]
-    order: Option<PathBuf>,
+    /// Increase logging verbosity
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
 
-    /// Use a text file to define multiple sections (Name:Target[:Parent])
-    #[arg(long)]
-    sections: Option<PathBuf>,
-
-    /// Add a single section marker (Name:Target[:Parent])
-    #[arg(long)]
-    section: Vec<String>,
-
-    /// Add archival metadata (Key:Value)
-    #[arg(long)]
-    meta: Vec<String>,
+    /// Suppress all logging output
+    #[arg(short, long, global = true)]
+    quiet: bool,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Display book structure and metadata
-    Info { file: PathBuf },
-    /// Perform integrity check on assets
-    Verify {
-        file: PathBuf,
-        /// Optional specific asset index to verify.
-        /// -1 verifies directory hash only.
-        /// Omission verifies everything.
-        index: Option<i32>,
+    /// Create a new BBF file
+    Create {
+        /// Output filename
+        output: PathBuf,
+
+        /// Path to a TOML manifest file defining book structure
+        #[arg(short, long)]
+        manifest: Option<PathBuf>,
+
+        /// Enable petrification (optimized for streaming)
+        #[arg(short, long)]
+        petrify: bool,
+
+        /// Input files or directories (overrides/appends to manifest inputs)
+        inputs: Vec<PathBuf>,
     },
     /// Extract content from a BBF file
     Extract {
-        file: PathBuf,
+        /// Input BBF file
+        input: PathBuf,
+
         /// Output directory
-        #[arg(long, default_value = "./extracted")]
-        outdir: PathBuf,
-        /// Extract only a specific section
-        #[arg(long)]
+        #[arg(short, long, default_value = "./extracted")]
+        out_dir: PathBuf,
+
+        /// Extract only a specific section by title
+        #[arg(short, long)]
         section: Option<String>,
-        /// Stop extraction when next section title matches this string
+    },
+    /// Display book structure and metadata
+    Info {
+        /// Input BBF file
+        input: PathBuf,
+
+        /// Output information in JSON format
         #[arg(long)]
-        rangekey: Option<String>,
+        json: bool,
+    },
+    /// Perform integrity check on assets
+    Verify {
+        /// Input BBF file
+        input: PathBuf,
+
+        /// Optional specific asset index to verify. Omission verifies everything.
+        #[arg(short, long)]
+        index: Option<i32>,
+
+        /// Output result in JSON format
+        #[arg(long)]
+        json: bool,
     },
 }
 
-#[derive(Clone, Debug)]
-struct PagePlan {
-    path: PathBuf,
-    filename: String,
-    order: i32, // 0 = unspecified, >0 = start, <0 = end
+#[derive(Deserialize, Debug, Default)]
+struct Manifest {
+    metadata: Option<HashMap<String, String>>,
+    sections: Option<Vec<SectionConfig>>,
+    options: Option<ManifestOptions>,
+    inputs: Option<Vec<PathBuf>>,
 }
 
-struct SectionReq {
+#[derive(Deserialize, Debug, Default)]
+struct ManifestOptions {
+    #[serde(default)]
+    petrify: bool,
+}
+
+#[derive(Deserialize, Debug)]
+struct SectionConfig {
     name: String,
     target: String,
-    parent: String,
-    is_filename: bool,
+    parent: Option<String>,
 }
 
-struct MetaReq {
-    key: String,
-    value: String,
+#[derive(Serialize)]
+struct InfoOutput {
+    version: u16,
+    pages: u64,
+    assets: u64,
+    petrified: bool,
+    sections: Vec<SectionInfo>,
+    metadata: HashMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct SectionInfo {
+    title: String,
+    start_page: u64,
+}
+
+fn setup_logging(verbose: u8, quiet: bool) {
+    if quiet {
+        return;
+    }
+
+    let level = match verbose {
+        0 => "info",
+        1 => "debug",
+        _ => "trace",
+    };
+
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_target(false)
+        .init();
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    setup_logging(cli.verbose, cli.quiet);
 
     match &cli.command {
-        Some(Commands::Info { file }) => cmd_info(file),
-        Some(Commands::Verify { file, index }) => cmd_verify(file, *index),
-        Some(Commands::Extract {
-            file,
-            outdir,
+        Commands::Create {
+            output,
+            manifest,
+            petrify,
+            inputs,
+        } => cmd_create(output, manifest.as_deref(), *petrify, inputs),
+        Commands::Extract {
+            input,
+            out_dir,
             section,
-            rangekey,
-        }) => cmd_extract(file, outdir, section.as_deref(), rangekey.as_deref()),
-        None => cmd_mux(&cli),
+        } => cmd_extract(input, out_dir, section.as_deref()),
+        Commands::Info { input, json } => cmd_info(input, *json),
+        Commands::Verify { input, index, json } => cmd_verify(input, *index, *json),
     }
 }
 
-#[allow(clippy::too_many_lines)]
-fn cmd_mux(cli: &Cli) -> Result<()> {
-    if cli.inputs.is_empty() {
-        bail!("Error: No .bbf input specified.");
+fn cmd_create(
+    output: &Path,
+    manifest_path: Option<&Path>,
+    cli_petrify: bool,
+    cli_inputs: &[PathBuf],
+) -> Result<()> {
+    let mut manifest = Manifest::default();
+
+    if let Some(path) = manifest_path {
+        info!("Reading manifest from {}", path.display());
+        let content = fs::read_to_string(path).context("Failed to read manifest file")?;
+        manifest = toml::from_str(&content).context("Failed to parse TOML manifest")?;
     }
 
-    let mut manifest = Vec::new();
-    let mut order_map = HashMap::new();
+    let is_petrified = cli_petrify || manifest.options.map(|o| o.petrify).unwrap_or(false);
 
-    if let Some(order_path) = &cli.order {
-        let content = fs::read_to_string(order_path).context("Failed to read order file")?;
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Some((fname, idx_str)) = line.rsplit_once(':') {
-                let fname = trim_quotes(fname);
-                let idx = idx_str.parse::<i32>().unwrap_or(0);
-                order_map.insert(fname, idx);
-            } else {
-                order_map.insert(trim_quotes(line), 0);
-            }
-        }
+    let mut all_inputs = manifest.inputs.unwrap_or_default();
+    all_inputs.extend_from_slice(cli_inputs);
+
+    if all_inputs.is_empty() {
+        bail!("Error: No input files specified in manifest or CLI.");
     }
 
-    for input_path in &cli.inputs {
-        if input_path.is_dir() {
-            for entry in fs::read_dir(input_path)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file() {
-                    add_to_manifest(&mut manifest, path, &order_map);
-                }
-            }
-        } else {
-            add_to_manifest(&mut manifest, input_path.clone(), &order_map);
-        }
-    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(output)
+        .context("Cannot create output file")?;
 
-    manifest.sort_by(compare_pages);
-
-    let mut sec_reqs = Vec::new();
-
-    if let Some(sec_path) = &cli.sections {
-        let content = fs::read_to_string(sec_path).context("Failed to read sections file")?;
-        for line in content.lines() {
-            if !line.trim().is_empty() {
-                sec_reqs.push(parse_section_string(line));
-            }
-        }
-    }
-
-    for s_str in &cli.section {
-        sec_reqs.push(parse_section_string(s_str));
-    }
-
-    let mut meta_reqs = Vec::new();
-    for m_str in &cli.meta {
-        if let Some((k, v)) = m_str.split_once(':') {
-            meta_reqs.push(MetaReq {
-                key: trim_quotes(k),
-                value: trim_quotes(v),
-            });
-        }
-    }
-
-    let file = File::create(&cli.output).context("Cannot create output file")?;
     let mut builder = BBFBuilder::new(file)?;
 
     let mut file_to_page_idx = HashMap::new();
+    let mut page_idx = 0;
 
-    for (i, p) in manifest.iter().enumerate() {
-        let input_file =
-            File::open(&p.path).with_context(|| format!("Failed to open {}", p.path.display()))?;
+    for input_path in &all_inputs {
+        if input_path.is_dir() {
+            debug!("Processing directory: {}", input_path.display());
+            let mut entries = fs::read_dir(input_path)?
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>();
+            entries.sort_by_key(|e| e.path());
 
-        let file_len = input_file.metadata()?.len();
-
-        let ext = p
-            .path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        let media_type = BBFMediaType::from_extension(&format!(".{ext}"));
-
-        if file_len == 0 {
-            builder.add_page(&[], media_type, 0)?;
+            for entry in entries {
+                if entry.path().is_file() {
+                    add_file_to_builder(
+                        &mut builder,
+                        &entry.path(),
+                        &mut file_to_page_idx,
+                        &mut page_idx,
+                    )?;
+                }
+            }
         } else {
-            let mmap = unsafe { Mmap::map(&input_file)? };
-            builder.add_page(&mmap, media_type, 0)?;
+            add_file_to_builder(
+                &mut builder,
+                input_path,
+                &mut file_to_page_idx,
+                &mut page_idx,
+            )?;
         }
-
-        file_to_page_idx.insert(p.filename.clone(), i as u32);
     }
 
     let mut section_name_to_idx = HashMap::new();
 
-    for (i, req) in sec_reqs.iter().enumerate() {
-        let page_idx = if req.is_filename {
-            if let Some(&idx) = file_to_page_idx.get(&req.target) {
+    if let Some(sections) = manifest.sections {
+        for (i, sec) in sections.iter().enumerate() {
+            let p_idx = if let Some(&idx) = file_to_page_idx.get(&sec.target) {
                 idx
+            } else if let Ok(parsed_idx) = sec.target.parse::<u32>() {
+                parsed_idx.saturating_sub(1)
             } else {
-                eprintln!(
-                    "Warning: Section target file '{}' not found. Defaulting to page 1.",
-                    req.target
+                warn!(
+                    "Section target '{}' not found. Defaulting to page 1.",
+                    sec.target
                 );
                 0
-            }
-        } else {
-            req.target.parse::<u32>().unwrap_or(1).saturating_sub(1)
-        };
+            };
 
-        let parent_idx = if req.parent.is_empty() {
-            None
-        } else {
-            section_name_to_idx.get(&req.parent).copied()
-        };
-
-        builder.add_section(&req.name, page_idx, parent_idx);
-        section_name_to_idx.insert(req.name.clone(), i as u32);
+            let parent_idx = sec
+                .parent
+                .as_ref()
+                .and_then(|p| section_name_to_idx.get(p).copied());
+            builder.add_section(&sec.name, p_idx, parent_idx);
+            section_name_to_idx.insert(sec.name.clone(), i as u32);
+        }
     }
 
-    for m in meta_reqs {
-        builder.add_metadata(&m.key, &m.value);
+    if let Some(meta) = manifest.metadata {
+        for (k, v) in meta {
+            builder.add_metadata(&k, &v);
+        }
     }
 
     builder.finalize()?;
-    println!(
+
+    if is_petrified {
+        info!("Petrifying file in-place...");
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(output)?;
+        bbf::builder::petrify(&mut f)?;
+        info!("Petrification complete.");
+    }
+
+    info!(
         "Successfully created {} ({} pages)",
-        cli.output,
-        manifest.len()
+        output.display(),
+        page_idx
     );
     Ok(())
 }
 
-fn cmd_info(path: &Path) -> Result<()> {
-    let file = File::open(path).context("Failed to open BBF")?;
-    let mmap = unsafe { Mmap::map(&file).context("Failed to mmap BBF")? };
+fn add_file_to_builder(
+    builder: &mut BBFBuilder<File>,
+    path: &Path,
+    file_map: &mut HashMap<String, u32>,
+    page_idx: &mut u32,
+) -> Result<()> {
+    debug!("Adding file: {}", path.display());
+    let file = File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+    let len = file.metadata()?.len();
 
-    let reader = BBFReader::new(&mmap[..])
-        .map_err(|e| anyhow::anyhow!("Error: Failed to parse BBF. {e:?}"))?;
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let media_type = BBFMediaType::from_extension(&format!(".{ext}"));
 
-    println!("Bound Book Format (.bbf) Info");
-    println!("------------------------------");
-    println!("BBF Version: {}", reader.header.version);
-    println!("Pages:       {}", reader.footer.page_count.get());
-    println!(
-        "Assets:      {} (Deduplicated)",
-        reader.footer.asset_count.get()
-    );
-
-    println!("\n[Sections]");
-    let sections = reader.sections();
-    if sections.is_empty() {
-        println!(" No sections defined.");
+    if len == 0 {
+        builder.add_page(&[], media_type, 0)?;
     } else {
-        for s in sections {
-            let title = reader
-                .get_string(s.section_title_offset.get())
-                .unwrap_or("???");
-            println!(
-                " - {:<20} (Starting Page: {})",
-                title,
-                s.section_start_index.get() + 1
-            );
-        }
+        let mmap = unsafe { Mmap::map(&file)? };
+        builder.add_page(&mmap, media_type, 0)?;
     }
 
-    println!("\n[Metadata]");
-    let metadata = reader.metadata();
-    if metadata.is_empty() {
-        println!(" No metadata found.");
-    } else {
-        for m in metadata {
-            let k = reader.get_string(m.key_offset.get()).unwrap_or("?");
-            let v = reader.get_string(m.value_offset.get()).unwrap_or("?");
-            println!(" - {k:<15}:{v}");
-        }
-    }
-    println!();
+    let filename = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    file_map.insert(filename, *page_idx);
+    *page_idx += 1;
     Ok(())
 }
 
-fn cmd_verify(path: &Path, user_index: Option<i32>) -> Result<()> {
-    let target_index = user_index.unwrap_or(-2);
-
+fn cmd_info(path: &Path, json: bool) -> Result<()> {
     let file = File::open(path).context("Failed to open BBF")?;
     let mmap = unsafe { Mmap::map(&file).context("Failed to mmap BBF")? };
+    let reader =
+        BBFReader::new(&mmap[..]).map_err(|e| anyhow::anyhow!("Error parsing BBF: {e:?}"))?;
 
-    let reader = BBFReader::new(&mmap[..])
-        .map_err(|e| anyhow::anyhow!("Error: Failed to parse BBF. {e:?}"))?;
+    let is_petrified =
+        reader.header.footer_offset.get() == std::mem::size_of::<bbf::format::BBFHeader>() as u64;
+
+    let mut info_out = InfoOutput {
+        version: reader.header.version.get(),
+        pages: reader.footer.page_count.get(),
+        assets: reader.footer.asset_count.get(),
+        petrified: is_petrified,
+        sections: Vec::new(),
+        metadata: HashMap::new(),
+    };
+
+    for s in reader.sections() {
+        let title = reader
+            .get_string(s.section_title_offset.get())
+            .unwrap_or("???")
+            .to_string();
+        info_out.sections.push(SectionInfo {
+            title,
+            start_page: s.section_start_index.get() + 1,
+        });
+    }
+
+    for m in reader.metadata() {
+        let k = reader
+            .get_string(m.key_offset.get())
+            .unwrap_or("?")
+            .to_string();
+        let v = reader
+            .get_string(m.value_offset.get())
+            .unwrap_or("?")
+            .to_string();
+        info_out.metadata.insert(k, v);
+    }
+
+    if json {
+        let serialized = serde_json::to_string_pretty(&info_out)?;
+        println!("{}", serialized);
+    } else {
+        println!("Bound Book Format (.bbf) Info");
+        println!("------------------------------");
+        println!("BBF Version: {}", info_out.version);
+        println!("Pages:       {}", info_out.pages);
+        println!("Assets:      {} (Deduplicated)", info_out.assets);
+        println!(
+            "Petrified:   {}",
+            if info_out.petrified { "Yes" } else { "No" }
+        );
+
+        println!("\n[Sections]");
+        if info_out.sections.is_empty() {
+            println!(" No sections defined.");
+        } else {
+            for s in &info_out.sections {
+                println!(" - {:<20} (Starting Page: {})", s.title, s.start_page);
+            }
+        }
+
+        println!("\n[Metadata]");
+        if info_out.metadata.is_empty() {
+            println!(" No metadata found.");
+        } else {
+            for (k, v) in &info_out.metadata {
+                println!(" - {k:<15}:{v}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_verify(path: &Path, user_index: Option<i32>, json: bool) -> Result<()> {
+    let file = File::open(path).context("Failed to open BBF")?;
+    let mmap = unsafe { Mmap::map(&file).context("Failed to mmap BBF")? };
+    let reader =
+        BBFReader::new(&mmap[..]).map_err(|e| anyhow::anyhow!("Error parsing BBF: {e:?}"))?;
 
     let data = &mmap[..];
-
     let meta_start = reader.footer.string_pool_offset.get() as usize;
     let meta_size = data.len() - size_of::<BBFFooter>() - meta_start;
 
@@ -313,32 +401,18 @@ fn cmd_verify(path: &Path, user_index: Option<i32>) -> Result<()> {
     let calc_index_hash = xxh3_64(&data[meta_start..meta_start + meta_size]);
     let dir_ok = calc_index_hash == reader.footer.footer_hash.get();
 
-    if target_index == -1 {
-        println!("Directory Hash: {}", if dir_ok { "OK" } else { "CORRUPT" });
-        return if dir_ok {
-            Ok(())
-        } else {
-            bail!("Directory hash mismatch")
-        };
-    }
-
-    println!("Verifying integrity using XXH3 (Parallel)...");
-    if !dir_ok {
-        eprintln!(
-            " [!!] Directory Hash CORRUPT (Wanted: {}, Got: {})",
-            reader.footer.footer_hash.get(),
-            calc_index_hash
-        );
-    }
-
     let assets = reader.assets();
+    let target_index = user_index.unwrap_or(-2);
+
     let check_asset = |idx: usize| -> bool {
         let asset = &assets[idx];
         let start = asset.file_offset.get() as usize;
         let len = asset.file_size.get() as usize;
 
         if start + len > data.len() {
-            eprintln!(" [!!] Asset {idx} CORRUPT (Out of bounds)");
+            if !json {
+                eprintln!(" [!!] Asset {idx} CORRUPT (Out of bounds)");
+            }
             return false;
         }
 
@@ -346,8 +420,11 @@ fn cmd_verify(path: &Path, user_index: Option<i32>) -> Result<()> {
         let hash = xxhash_rust::xxh3::xxh3_128(slice);
         let hash_lo = (hash & 0xFFFF_FFFF_FFFF_FFFF) as u64;
         let hash_hi = (hash >> 64) as u64;
+
         if hash_lo != asset.asset_hash[0].get() || hash_hi != asset.asset_hash[1].get() {
-            eprintln!(" [!!] Asset {idx} CORRUPT");
+            if !json {
+                eprintln!(" [!!] Asset {idx} CORRUPT");
+            }
             return false;
         }
         true
@@ -355,6 +432,8 @@ fn cmd_verify(path: &Path, user_index: Option<i32>) -> Result<()> {
 
     let all_assets_ok = if target_index >= 0 {
         check_asset(target_index as usize)
+    } else if target_index == -1 {
+        true
     } else {
         (0..assets.len())
             .into_par_iter()
@@ -362,35 +441,43 @@ fn cmd_verify(path: &Path, user_index: Option<i32>) -> Result<()> {
             .reduce(|| true, |a, b| a && b)
     };
 
-    if all_assets_ok && dir_ok {
-        println!("All integrity checks passed.");
+    let success = dir_ok && all_assets_ok;
+
+    if json {
+        let out = serde_json::json!({
+            "directory_ok": dir_ok,
+            "assets_ok": all_assets_ok,
+            "overall_success": success
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+    } else {
+        println!("Directory Hash: {}", if dir_ok { "OK" } else { "CORRUPT" });
+        if target_index != -1 {
+            println!("Assets: {}", if all_assets_ok { "OK" } else { "CORRUPT" });
+        }
+    }
+
+    if success {
         Ok(())
     } else {
-        bail!("Integrity checks failed.");
+        bail!("Integrity checks failed.")
     }
 }
 
-fn cmd_extract(
-    path: &Path,
-    outdir: &Path,
-    section_filter: Option<&str>,
-    range_key: Option<&str>,
-) -> Result<()> {
+fn cmd_extract(path: &Path, outdir: &Path, section_filter: Option<&str>) -> Result<()> {
     let file = File::open(path).context("Failed to open BBF")?;
     let mmap = unsafe { Mmap::map(&file).context("Failed to mmap BBF")? };
-
-    let reader = BBFReader::new(&mmap[..])
-        .map_err(|e| anyhow::anyhow!("Error: Failed to parse BBF. {e:?}"))?;
+    let reader =
+        BBFReader::new(&mmap[..]).map_err(|e| anyhow::anyhow!("Error parsing BBF: {e:?}"))?;
 
     fs::create_dir_all(outdir)?;
 
     let pages = reader.pages();
     let sections = reader.sections();
 
-    let mut start_idx: u64 = 0;
-    let mut end_idx: u64 = pages.len() as u64;
-
-    let mut section_name_found = "Full Book";
+    let mut start_idx = 0;
+    let mut end_idx = pages.len() as u64;
+    let mut section_name = "Full Book";
 
     if let Some(filter) = section_filter {
         let mut found = false;
@@ -400,29 +487,13 @@ fn cmd_extract(
                 .unwrap_or("");
             if title == filter {
                 start_idx = s.section_start_index.get();
-                section_name_found = title;
+                section_name = title;
 
-                end_idx = pages.len() as u64;
+                end_idx = sections
+                    .get(i + 1)
+                    .map(|next_s| next_s.section_start_index.get())
+                    .unwrap_or(pages.len() as u64);
 
-                for next_s in sections.iter().skip(i + 1) {
-                    let next_title = reader
-                        .get_string(next_s.section_title_offset.get())
-                        .unwrap_or("");
-
-                    if let Some(rk) = range_key {
-                        if !rk.is_empty() && next_title.contains(rk) {
-                            end_idx = next_s.section_start_index.get();
-                            break;
-                        }
-                        if rk.is_empty() && next_s.section_start_index.get() > start_idx {
-                            end_idx = next_s.section_start_index.get();
-                            break;
-                        }
-                    } else if next_s.section_start_index.get() > start_idx {
-                        end_idx = next_s.section_start_index.get();
-                        break;
-                    }
-                }
                 found = true;
                 break;
             }
@@ -432,94 +503,35 @@ fn cmd_extract(
         }
     }
 
-    println!(
-        "Extracting: {} (Pages {} to {})",
-        section_name_found,
+    info!(
+        "Extracting: {} (Pages {} to {}) to {}",
+        section_name,
         start_idx + 1,
-        end_idx
+        end_idx,
+        outdir.display()
     );
 
     let data = &mmap[..];
-
     for i in start_idx..end_idx {
-        if i as usize >= pages.len() {
-            break;
-        }
-
         let page = &pages[i as usize];
         let asset = &reader.assets()[page.asset_index.get() as usize];
-
         let ext = BBFMediaType::from(asset.type_).as_extension();
 
         let out_name = format!("p{}{}", i + 1, ext);
         let out_path = outdir.join(out_name);
 
-        let file_offset = asset.file_offset.get() as usize;
-        let file_len = asset.file_size.get() as usize;
+        let offset = asset.file_offset.get() as usize;
+        let len = asset.file_size.get() as usize;
 
-        if file_offset + file_len > data.len() {
-            eprintln!("Warning: Page {i} out of bounds, skipping.");
+        if offset + len > data.len() {
+            warn!("Page {i} out of bounds, skipping.");
             continue;
         }
 
         let mut f = File::create(out_path)?;
-        f.write_all(&data[file_offset..file_offset + file_len])?;
+        f.write_all(&data[offset..offset + len])?;
     }
 
-    println!("Done.");
+    info!("Extraction complete.");
     Ok(())
-}
-
-fn add_to_manifest(manifest: &mut Vec<PagePlan>, path: PathBuf, order_map: &HashMap<String, i32>) {
-    let filename = path.file_name().unwrap().to_string_lossy().to_string();
-    let order = *order_map.get(&filename).unwrap_or(&0);
-    manifest.push(PagePlan {
-        path,
-        filename,
-        order,
-    });
-}
-
-fn parse_section_string(s: &str) -> SectionReq {
-    let mut parts: Vec<&str> = Vec::new();
-    for part in s.split(':') {
-        parts.push(part);
-    }
-
-    let name = trim_quotes(parts.first().unwrap_or(&""));
-    let target = trim_quotes(parts.get(1).unwrap_or(&"1"));
-    let parent = trim_quotes(parts.get(2).unwrap_or(&""));
-
-    let is_filename = !target.chars().all(char::is_numeric);
-
-    SectionReq {
-        name,
-        target,
-        parent,
-        is_filename,
-    }
-}
-
-fn trim_quotes(s: &str) -> String {
-    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-        s[1..s.len() - 1].to_string()
-    } else {
-        s.to_string()
-    }
-}
-
-fn compare_pages(a: &PagePlan, b: &PagePlan) -> Ordering {
-    match (a.order, b.order) {
-        (x, y) if x > 0 && y > 0 => x.cmp(&y),
-
-        (x, y) if x > 0 && y <= 0 => Ordering::Less,
-        (x, y) if x <= 0 && y > 0 => Ordering::Greater,
-
-        (0, 0) => a.filename.cmp(&b.filename),
-
-        (0, y) if y < 0 => Ordering::Less,
-        (x, 0) if x < 0 => Ordering::Greater,
-
-        (x, y) => x.cmp(&y),
-    }
 }
